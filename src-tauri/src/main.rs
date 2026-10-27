@@ -328,6 +328,9 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
         ))
+        // Aviso de versão nova: notificação do sistema e botão que abre o Release no navegador
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             crop_gif,
             ai_usage,

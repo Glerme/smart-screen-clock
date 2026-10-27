@@ -21,7 +21,15 @@ Dependências do sistema (CachyOS/Arch): `rustup` (toolchain stable), `webkit2gt
   Visual pixel: prévia da tela à esquerda (`#screen`, aproximada — o firmware não expõe o layout real) e 4 abas.
 - `ui/fonts/` — Silkscreen e VT323 (OFL) embutidas, porque o app roda offline.
 - `src-tauri/src/main.rs` — registra o plugin HTTP e o comando `crop_gif`.
-- `src-tauri/capabilities/default.json` — libera o plugin HTTP para `http://*`.
+- `src-tauri/capabilities/default.json` — libera o plugin HTTP para `http://*` e para a API de Releases do GitHub.
+
+## Aviso de versão nova
+
+Ao abrir e a cada 6 h o app lê o último Release do GitHub (o CI publica um a cada PR mergeado na main) e,
+se a tag for maior que a versão do app, mostra uma faixa com "Baixar" (abre o Release, plugin `opener`) e
+uma notificação do sistema (plugin `notification`, uma vez por versão). Não instala sozinho.
+O `tauri.conf.json` fica sempre em `0.1.0`: a versão real só é aplicada no CI. Por isso um build local
+mostra o aviso sempre que existir Release mais novo que 0.1.0.
 
 ## Decisões que não são óbvias
 

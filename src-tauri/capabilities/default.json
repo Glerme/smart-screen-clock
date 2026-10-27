@@ -13,9 +13,14 @@
         },
         {
           "url": "http://*:*"
+        },
+        {
+          "url": "https://api.github.com/repos/Glerme/smart-screen-clock/releases/latest"
         }
       ]
     },
-    "autostart:default"
+    "autostart:default",
+    "notification:default",
+    "opener:default"
   ]
 }

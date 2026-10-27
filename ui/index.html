@@ -147,6 +147,12 @@
   progress::-webkit-progress-value { background: repeating-linear-gradient(90deg, var(--accent) 0 10px, transparent 10px 12px); }
   progress::-moz-progress-bar { background: repeating-linear-gradient(90deg, var(--accent) 0 10px, transparent 10px 12px); }
 
+  .update { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: -6px 0 20px; padding: 8px 12px;
+    background: var(--accent); color: var(--accent-ink); border: 2px solid var(--line); box-shadow: 4px 4px 0 var(--shadow); }
+  .update b { font: 700 13px var(--pixel); }
+  .update span { flex: 1; min-width: 12em; }
+  .update button { background: var(--card); color: var(--text); }
+
   .offline { background: var(--card); border: 2px solid var(--line); box-shadow: 4px 4px 0 var(--shadow); padding: 16px; }
   .offline p { margin: 0 0 6px; }
 
@@ -168,6 +174,13 @@
     <button id="connect">Conectar</button>
   </div>
 </header>
+
+<div class="update" id="update" role="status" hidden>
+  <b>Nova versão</b>
+  <span id="updateText"></span>
+  <button class="small" id="updateGet">Baixar</button>
+  <button class="small" id="updateLater">Depois</button>
+</div>
 
 <main class="layout">
   <aside class="device-col">
@@ -1169,6 +1182,40 @@ $('restart').onclick = async () => {
   try { await req('/restart'); } catch {} // a tela costuma cair antes de responder
   status('Reiniciando... reconecte em alguns segundos.');
 };
+
+// ---- Aviso de versão nova (Releases que o CI publica a cada PR na main) ----
+const RELEASES = 'https://api.github.com/repos/Glerme/smart-screen-clock/releases/latest';
+const newer = (a, b) => { // "0.1.10" > "0.1.9"
+  const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+  return false;
+};
+console.assert(newer('0.1.10', '0.1.9') && !newer('0.1.0', '0.1.0') && !newer('0.1.9', '0.2.0'), 'newer()');
+
+async function checkUpdate() {
+  try {
+    const [current, rel] = await Promise.all([
+      window.__TAURI__.app.getVersion(),
+      httpFetch(RELEASES, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'SmartScreen' } }).then(r => r.ok ? r.json() : null),
+    ]);
+    const latest = rel?.tag_name?.replace(/^v/, '');
+    if (!latest || !newer(latest, current)) return;
+    if (store.get('updateLater') !== latest) {
+      $('updateText').textContent = `v${latest} disponível (você está na v${current}).`;
+      $('updateGet').onclick = () => window.__TAURI__.opener.openUrl(rel.html_url);
+      $('updateLater').onclick = () => { store.set('updateLater', latest); $('update').hidden = true; };
+      $('update').hidden = false;
+    }
+    if (store.get('updateNotified') === latest) return; // notificação do sistema só uma vez por versão
+    const n = window.__TAURI__.notification;
+    if (await n.isPermissionGranted() || await n.requestPermission() === 'granted') {
+      n.sendNotification({ title: 'Smart Screen: nova versão', body: `v${latest} disponível. Abra o app para baixar.` });
+      store.set('updateNotified', latest);
+    }
+  } catch (e) { console.warn('checagem de versão falhou', e); } // sem internet: tenta de novo no próximo ciclo
+}
+checkUpdate();
+setInterval(checkUpdate, 6 * 3600e3);
 
 let saved = null;
 try { saved = localStorage.getItem('ip'); } catch {}
