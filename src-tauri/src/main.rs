@@ -232,6 +232,85 @@ async fn github_status() -> Result<Value, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Aparelhos ligados na rede local (/24 da rota padrão): manda um UDP para cada IP, o que força o
+/// kernel a resolver o MAC (ARP), e depois lê a tabela de vizinhos. Não precisa de root.
+/// shortcut: assume rede /24; para redes maiores, usar o prefixo real da interface.
+#[tauri::command]
+async fn network_devices() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let run = |args: &[&str]| -> Result<Value, String> {
+            let out = std::process::Command::new("ip").args(args).output().map_err(|e| e.to_string())?;
+            serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())
+        };
+        let routes = run(&["-j", "-4", "route", "show", "default"])?;
+        let dev = routes[0]["dev"].as_str().ok_or("sem rota padrão")?.to_string();
+        let addrs = run(&["-j", "-4", "addr", "show", "dev", &dev])?;
+        let local = addrs[0]["addr_info"][0]["local"].as_str().ok_or("sem IP local")?;
+        let base: Vec<&str> = local.split('.').take(3).collect();
+        let sock = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+        for i in 1..255 {
+            let _ = sock.send_to(b"x", format!("{}.{i}:9", base.join(".")));
+        }
+        std::thread::sleep(Duration::from_secs(2));
+        let neigh = run(&["-j", "-4", "neigh", "show", "dev", &dev])?;
+        let devices: Vec<Value> = neigh
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|n| n["lladdr"].is_string())
+            .filter(|n| {
+                !n["state"].as_array().into_iter().flatten().any(|s| s == "FAILED" || s == "INCOMPLETE")
+            })
+            .map(|n| json!({ "ip": n["dst"], "mac": n["lladdr"] }))
+            .collect();
+        Ok(json!({ "self": local, "devices": devices }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Baixa um feed RSS/Atom (o webview não pode por CORS); o JS faz o parse.
+#[tauri::command]
+async fn fetch_feed(url: String) -> Result<String, String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("URL do feed precisa começar com http(s)://".into());
+    }
+    let res = tauri_plugin_http::reqwest::Client::new()
+        .get(&url)
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| format!("sem conexão: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("feed respondeu {}", res.status()));
+    }
+    res.text().await.map_err(|e| e.to_string())
+}
+
+/// Escolhe a foto do dia numa pasta: muda uma vez por dia e é a mesma o dia todo.
+fn pick_photo(dir: &str, day: u64) -> Result<PathBuf, String> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .map_err(|_| format!("não consegui abrir a pasta {dir}"))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| matches!(x.to_lowercase().as_str(), "jpg" | "jpeg" | "png" | "webp"))
+        })
+        .collect();
+    if files.is_empty() {
+        return Err("a pasta não tem fotos (jpg, png, webp)".into());
+    }
+    files.sort(); // ordem estável para o mesmo dia escolher a mesma foto
+    Ok(files.swap_remove((day as usize).wrapping_mul(7919) % files.len()))
+}
+
+#[tauri::command]
+async fn photo_of_day(dir: String, day: u64) -> Result<Response, String> {
+    std::fs::read(pick_photo(&dir, day)?).map(Response::new).map_err(|e| e.to_string())
+}
+
 fn show_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -249,7 +328,15 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
         ))
-        .invoke_handler(tauri::generate_handler![crop_gif, ai_usage, pc_status, github_status])
+        .invoke_handler(tauri::generate_handler![
+            crop_gif,
+            ai_usage,
+            pc_status,
+            github_status,
+            network_devices,
+            fetch_feed,
+            photo_of_day
+        ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Abrir", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Sair", true, None::<&str>)?;
@@ -346,5 +433,27 @@ mod tests {
         let v = tauri::async_runtime::block_on(github_status()).unwrap();
         println!("{v}");
         assert!(v["open"].is_number());
+    }
+
+    #[test]
+    fn foto_do_dia_e_estavel_e_ignora_outros_arquivos() {
+        let dir = std::env::temp_dir().join(format!("smartscreen-fotos-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (n, c) in [("a.jpg", "A"), ("b.PNG", "B"), ("c.txt", "C")] {
+            std::fs::write(dir.join(n), c).unwrap();
+        }
+        let d = dir.display().to_string();
+        assert_eq!(pick_photo(&d, 10).unwrap(), pick_photo(&d, 10).unwrap(), "mesmo dia, mesma foto");
+        let all: std::collections::HashSet<PathBuf> = (0..20).map(|day| pick_photo(&d, day).unwrap()).collect();
+        assert_eq!(all.len(), 2, "só jpg/png entram, e ambos aparecem ao longo dos dias");
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(pick_photo("/nao/existe", 1).is_err());
+    }
+
+    #[test]
+    fn varredura_acha_aparelhos_na_rede() {
+        let v = tauri::async_runtime::block_on(network_devices()).unwrap();
+        println!("{} aparelhos, eu = {}", v["devices"].as_array().unwrap().len(), v["self"]);
+        assert!(v["self"].is_string());
     }
 }
