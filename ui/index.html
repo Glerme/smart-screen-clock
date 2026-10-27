@@ -20,7 +20,8 @@
   .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; }
   .row + .row { border-top: 1px solid var(--line); }
   :root { color-scheme: light dark; }
-  input[type=text], select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background-color: var(--bg); color: var(--text); font: inherit; }
+  textarea { flex: 1; min-width: 0; resize: vertical; font: 12px/1.4 ui-monospace, monospace; }
+  input[type=text], select, textarea { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background-color: var(--bg); color: var(--text); font: inherit; }
   /* appearance:none: sem isso o WebKitGTK usa o tema do GTK e o texto some no modo escuro */
   select { appearance: none; -webkit-appearance: none; padding-right: 26px; cursor: pointer;
     background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
@@ -140,6 +141,16 @@
       </select>
     </div>
     <div class="row muted" id="panelInfo">Só reenvia o que mudou. Ative a tela Photo para ver os painéis.</div>
+  </section>
+
+  <section>
+    <h2>Configurar painéis</h2>
+    <div class="row"><label for="cfgFocus">Foco do dia</label><input type="text" id="cfgFocus" placeholder="Ex.: terminar o app da tela"></div>
+    <div class="row"><label for="cfgHabits">Hábitos</label><input type="text" id="cfgHabits" placeholder="Água, Academia, Leitura"></div>
+    <div id="habitToday"></div>
+    <div class="row"><label for="cfgFeed">Feeds de notícias<br><span class="muted">um por linha, até 5</span></label><textarea id="cfgFeed" rows="3"></textarea></div>
+    <div class="row"><label for="cfgPhotos">Pasta de fotos</label><input type="text" id="cfgPhotos" placeholder="/home/voce/Imagens"></div>
+    <div class="row"><span class="muted" id="netKnown">Rede: aparelhos conhecidos são salvos na primeira varredura.</span><button class="small" id="netTrust">Marcar atuais como conhecidos</button></div>
   </section>
 
   <section>
@@ -521,31 +532,264 @@ function drawGithub(ctx, d) {
   });
 }
 
+// ---- Configurações dos painéis (ficam salvas só neste PC) ----
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('cfg:' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('cfg:' + k, JSON.stringify(v)); } catch {} },
+};
+const today = () => new Date().toLocaleDateString('sv'); // AAAA-MM-DD no fuso local
+const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
+
+// Quebra o texto em linhas que cabem em `max` px; a última ganha "…" se sobrar texto
+function wrap(ctx, text, max, lines) {
+  const out = [];
+  let cur = '';
+  for (const w of String(text).split(/\s+/).filter(Boolean)) {
+    const t = cur ? cur + ' ' + w : w;
+    if (ctx.measureText(t).width <= max || !cur) cur = t;
+    else { out.push(cur); cur = w; }
+  }
+  if (cur) out.push(cur);
+  if (out.length > lines) {
+    out.length = lines;
+    let l = out[lines - 1];
+    while (l && ctx.measureText(l + '…').width > max) l = l.slice(0, -1);
+    out[lines - 1] = l + '…';
+  }
+  return out;
+}
+
+function blank(ctx) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 240, 240); }
+
+// Rede: aparelhos online e os que nunca foram vistos antes
+async function loadNetwork() {
+  const { devices } = await invoke('network_devices');
+  let known = store.get('netKnown', null);
+  if (!known) { known = devices.map(d => d.mac); store.set('netKnown', known); } // 1ª varredura: tudo conhecido
+  showKnown();
+  return { count: devices.length + 1, news: devices.filter(d => !known.includes(d.mac)) }; // +1: este PC
+}
+function drawNetwork(ctx, d) {
+  blank(ctx);
+  caption(ctx, 'Rede', 10, 26, '#ffffff', 'bold 20px sans-serif', 'left');
+  caption(ctx, String(d.count), 120, 108, '#58a6ff', 'bold 64px sans-serif', 'center', 220);
+  caption(ctx, 'aparelhos conectados', 120, 134, '#c9d1d9', '16px sans-serif', 'center', 220);
+  ctx.fillStyle = '#30363d';
+  ctx.fillRect(10, 150, 220, 1);
+  if (!d.news.length) {
+    ctx.fillStyle = '#3fb950'; ctx.beginPath(); ctx.arc(26, 190, 6, 0, 2 * Math.PI); ctx.fill();
+    return caption(ctx, 'Nenhum aparelho novo', 40, 196, '#c9d1d9', 'bold 16px sans-serif', 'left', 190);
+  }
+  caption(ctx, `${d.news.length} ${d.news.length > 1 ? 'aparelhos novos' : 'aparelho novo'}`, 10, 176, '#f2cc60', 'bold 18px sans-serif', 'left', 220);
+  d.news.slice(0, 2).forEach((n, i) => {
+    caption(ctx, n.ip, 10, 202 + i * 26, '#ffffff', 'bold 15px sans-serif', 'left', 100);
+    caption(ctx, n.mac, 230, 202 + i * 26, '#a8b1bb', '14px sans-serif', 'right', 130);
+  });
+}
+
+// Foco do dia: frase grande escrita no app
+async function loadFocus() {
+  const text = store.get('focus', '').trim();
+  if (!text) throw new Error('escreva o foco do dia em "Configurar painéis"');
+  return { text, date: new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }) };
+}
+function drawFocus(ctx, d) {
+  blank(ctx);
+  caption(ctx, 'FOCO DO DIA', 120, 30, '#f2cc60', 'bold 15px sans-serif', 'center', 220);
+  ctx.font = 'bold 26px sans-serif';
+  const lines = wrap(ctx, d.text, 216, 5);
+  const top = 130 - (lines.length * 32) / 2 + 22;
+  lines.forEach((l, i) => caption(ctx, l, 120, top + i * 32, '#ffffff', 'bold 26px sans-serif', 'center', 224));
+  caption(ctx, d.date, 120, 226, '#8b949e', '14px sans-serif', 'center', 220);
+}
+
+// Hábitos: grade dos últimos 7 dias, marcados no app
+const habitNames = () => store.get('habits', ['Água', 'Academia', 'Leitura']);
+async function loadHabits() {
+  const names = habitNames();
+  if (!names.length) throw new Error('cadastre hábitos em "Configurar painéis"');
+  return { names, log: store.get('habitLog', {}), day: today() };
+}
+function drawHabits(ctx, d) {
+  blank(ctx);
+  caption(ctx, 'Hábitos', 10, 26, '#ffffff', 'bold 20px sans-serif', 'left');
+  const days = [...Array(7)].map((_, i) => { const t = new Date(); t.setDate(t.getDate() - 6 + i); return t; });
+  days.forEach((t, i) => {
+    const isToday = i === 6;
+    caption(ctx, 'DSTQQSS'[t.getDay()], 105 + i * 20, 52, isToday ? '#f2cc60' : '#8b949e', 'bold 14px sans-serif', 'center', 18);
+  });
+  d.names.slice(0, 6).forEach((name, r) => {
+    const y = 64 + r * 29;
+    caption(ctx, name, 8, y + 16, '#e6edf3', 'bold 15px sans-serif', 'left', 86);
+    days.forEach((t, i) => {
+      const done = (d.log[t.toLocaleDateString('sv')] || []).includes(name);
+      ctx.fillStyle = done ? '#3fb950' : '#21262d';
+      ctx.fillRect(97 + i * 20, y + 2, 16, 16);
+    });
+  });
+}
+
+// Notícias: manchetes de um feed RSS/Atom
+const DEFAULT_FEED = 'https://g1.globo.com/rss/g1/';
+const MAX_FEEDS = 5; // cada feed é uma foto na tela: limita o espaço e as gravações
+const feedList = () => store.get('feeds', [store.get('feed', DEFAULT_FEED)]); // 'feed': versão com um só
+
+async function loadFeed(url) {
+  const doc = new DOMParser().parseFromString(await invoke('fetch_feed', { url }), 'text/xml');
+  const items = [...doc.querySelectorAll('item, entry')].slice(0, 3).map(i => i.querySelector('title')?.textContent.trim()).filter(Boolean);
+  if (!items.length) throw new Error(`${url} não tem manchetes`);
+  return { source: doc.querySelector('channel > title, feed > title')?.textContent.trim() || 'Notícias', items };
+}
+
+// Carrossel: uma página (foto) por feed; a tela Photo alterna entre elas
+async function loadNews() {
+  const results = await Promise.allSettled(feedList().slice(0, MAX_FEEDS).map(loadFeed));
+  const pages = results.filter(r => r.status === 'fulfilled').map(r => r.value);
+  const failed = results.filter(r => r.status === 'rejected');
+  if (!pages.length) throw failed[0]?.reason || new Error('nenhum feed configurado');
+  if (failed.length) status(`Notícias: ${failed.length} feed(s) falharam: ${failed[0].reason}`, true);
+  return pages;
+}
+function drawNews(ctx, d) {
+  blank(ctx);
+  caption(ctx, d.source, 10, 24, '#ff6b5f', 'bold 16px sans-serif', 'left', 220);
+  ctx.font = 'bold 21px sans-serif';
+  const first = wrap(ctx, d.items[0], 220, 5);
+  first.forEach((l, i) => caption(ctx, l, 10, 56 + i * 26, '#ffffff', 'bold 21px sans-serif', 'left', 224));
+  let y = 56 + first.length * 26;
+  if (d.items[1] && y < 190) {
+    ctx.fillStyle = '#30363d'; ctx.fillRect(10, y - 8, 220, 1);
+    ctx.font = '15px sans-serif';
+    wrap(ctx, d.items[1], 220, Math.min(2, Math.floor((236 - y) / 19))).forEach((l, i) => caption(ctx, l, 10, y + 14 + i * 19, '#a8b1bb', '15px sans-serif', 'left', 224));
+  }
+}
+
+// Foto do dia: uma foto da pasta escolhida, a mesma o dia todo
+async function loadPhoto() {
+  const dir = store.get('photos', '').trim();
+  if (!dir) throw new Error('escolha a pasta de fotos em "Configurar painéis"');
+  const day = Math.floor((Date.now() - new Date().getTimezoneOffset() * 6e4) / 864e5);
+  return createImageBitmap(new Blob([await invoke('photo_of_day', { dir, day })]));
+}
+function drawPhoto(ctx, img) {
+  blank(ctx);
+  const s = Math.min(img.width, img.height);
+  ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, 240, 240);
+}
+
 const PANELS = [
   { id: 'ia', name: 'Limites de IA', cmd: 'ai_usage', draw: drawAi },
   { id: 'pc', name: 'Status do PC', cmd: 'pc_status', draw: drawPc },
   { id: 'github', name: 'GitHub', cmd: 'github_status', draw: drawGithub },
+  { id: 'rede', name: 'Rede', load: loadNetwork, draw: drawNetwork },
+  { id: 'foco', name: 'Foco do dia', load: loadFocus, draw: drawFocus },
+  { id: 'habitos', name: 'Hábitos', load: loadHabits, draw: drawHabits },
+  { id: 'noticias', name: 'Notícias', load: loadNews, draw: drawNews, multi: true },
+  { id: 'foto', name: 'Foto do dia', load: loadPhoto, draw: drawPhoto },
 ];
-const lastSent = {}; // imagem do último envio de cada painel, para não regravar a flash à toa
 
-async function refreshPanel(p, upload) {
-  let data;
-  try { data = await track(window.__TAURI__.core.invoke(p.cmd)); }
-  catch (e) { return status(`${p.name}: ${e}`, true); }
-  const c = $('panelCanvas');
-  p.draw(c.getContext('2d'), data);
-  $('panelCaption').textContent = p.name;
-  if (!upload) return;
+// ---- Campos de configuração ----
+function showKnown() {
+  const n = store.get('netKnown', null);
+  $('netKnown').textContent = n ? `Rede: ${n.length} aparelhos conhecidos` : 'Rede: a primeira varredura salva os aparelhos atuais como conhecidos';
+}
+showKnown();
+$('netTrust').onclick = async () => {
+  try {
+    const { devices } = await track(invoke('network_devices'));
+    store.set('netKnown', devices.map(d => d.mac));
+    showKnown();
+    status('Aparelhos atuais marcados como conhecidos');
+  } catch (e) { status(`Rede: ${e}`, true); }
+};
+
+$('cfgFocus').value = store.get('focus', '');
+$('cfgFocus').onchange = e => { store.set('focus', e.target.value); status('Foco do dia salvo'); };
+$('cfgFeed').value = feedList().join('\n');
+$('cfgFeed').onchange = e => {
+  const feeds = e.target.value.split(/\s+/).filter(Boolean).slice(0, MAX_FEEDS);
+  store.set('feeds', feeds.length ? feeds : [DEFAULT_FEED]);
+  e.target.value = feedList().join('\n');
+  status(`${feedList().length} feed(s) salvos`);
+};
+$('cfgPhotos').value = store.get('photos', '');
+$('cfgPhotos').onchange = e => { store.set('photos', e.target.value.trim()); status('Pasta de fotos salva'); };
+
+function renderHabitToday() {
+  const log = store.get('habitLog', {});
+  const done = log[today()] || [];
+  $('habitToday').replaceChildren(...habitNames().map(name => {
+    const row = document.createElement('label');
+    row.className = 'row';
+    row.innerHTML = '<span></span><input type="checkbox">';
+    row.firstChild.textContent = `Hoje: ${name}`;
+    const cb = row.lastChild;
+    cb.checked = done.includes(name);
+    cb.onchange = () => {
+      const l = store.get('habitLog', {});
+      const set = new Set(l[today()] || []);
+      cb.checked ? set.add(name) : set.delete(name);
+      l[today()] = [...set];
+      const cutoff = new Date(Date.now() - 30 * 864e5).toLocaleDateString('sv');
+      for (const k of Object.keys(l)) if (k < cutoff) delete l[k]; // guarda só 30 dias
+      store.set('habitLog', l);
+    };
+    return row;
+  }));
+}
+$('cfgHabits').value = habitNames().join(', ');
+$('cfgHabits').onchange = e => {
+  store.set('habits', e.target.value.split(',').map(x => x.trim()).filter(Boolean));
+  renderHabitToday();
+  status('Hábitos salvos');
+};
+renderHabitToday();
+const lastSent = {}; // imagem do último envio de cada arquivo, para não regravar a flash à toa
+const previewPage = {}; // página mostrada pelo "Ver" em painéis com várias páginas
+
+async function sendCanvas(c, name) {
   const url = c.toDataURL('image/jpeg', 0.85);
-  if (url === lastSent[p.id]) return;
+  if (url === lastSent[name]) return false;
   const blob = await new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.85));
   const form = new FormData();
-  form.append('file', blob, `${p.id}.jpg`);
+  form.append('file', blob, name);
+  await req('/photo/upload', { method: 'POST', body: form });
+  lastSent[name] = url;
+  return true;
+}
+
+// Painéis "multi" geram uma foto por página (ex.: noticias-1.jpg, noticias-2.jpg)
+async function refreshPanel(p, upload) {
+  let data;
+  try { data = await track(p.load ? p.load() : invoke(p.cmd)); }
+  catch (e) { return status(`${p.name}: ${e.message || e}`, true); }
+  const pages = p.multi ? data : [data];
+  const names = pages.map((_, i) => p.multi ? `${p.id}-${i + 1}.jpg` : `${p.id}.jpg`);
+  const c = $('panelCanvas');
+  const show = i => {
+    p.draw(c.getContext('2d'), pages[i]);
+    $('panelCaption').textContent = pages.length > 1 ? `${p.name} (${i + 1}/${pages.length})` : p.name;
+  };
+  if (!upload) { // cada "Ver" mostra a próxima página
+    const i = (previewPage[p.id] ?? -1) + 1;
+    previewPage[p.id] = i % pages.length;
+    return show(previewPage[p.id]);
+  }
   try {
-    await req('/photo/upload', { method: 'POST', body: form });
-    lastSent[p.id] = url;
-    $('panelInfo').textContent = `${p.name} enviado às ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
-    loadPhotos().catch(() => {});
+    let sent = 0;
+    for (let i = 0; i < pages.length; i++) { show(i); if (await sendCanvas(c, names[i])) sent++; }
+    if (p.multi) { // apaga páginas que sobraram de quando havia mais feeds
+      const { files } = await req('/photo/list').then(r => r.json());
+      const own = new RegExp(`^${p.id}(-\\d+)?\\.jpg$`);
+      for (const f of files) if (own.test(f.name) && !names.includes(f.name)) {
+        await req('/photo/delete?name=' + encodeURIComponent(f.name));
+        delete lastSent[f.name];
+      }
+    }
+    if (sent) {
+      $('panelInfo').textContent = `${p.name} enviado às ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
+      loadPhotos().catch(() => {});
+    }
   } catch (e) { status(`Falha ao enviar ${p.name}: ${e.message}`, true); }
 }
 
@@ -569,7 +813,7 @@ $('panels').replaceChildren(...PANELS.map(p => {
   };
   const [see, send] = row.querySelectorAll('button');
   see.onclick = () => refreshPanel(p, false);
-  send.onclick = () => { delete lastSent[p.id]; refreshPanel(p, true); };
+  send.onclick = () => { for (const k of Object.keys(lastSent)) if (k.startsWith(p.id)) delete lastSent[k]; refreshPanel(p, true); };
   return row;
 }));
 
