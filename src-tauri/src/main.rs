@@ -7,7 +7,9 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use tauri::ipc::{InvokeBody, Request, Response};
-use tauri::Manager;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Manager, WindowEvent};
 
 /// Corta o centro do GIF em quadrado e redimensiona para `size` x `size`, mantendo a animação.
 fn crop_gif_square(bytes: &[u8], size: u32) -> Result<Vec<u8>, String> {
@@ -230,11 +232,55 @@ async fn github_status() -> Result<Value, String> {
     .map_err(|e| e.to_string())?
 }
 
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         // HTTP pelo Rust: a tela não envia cabeçalhos CORS, então fetch do webview falharia
         .plugin(tauri_plugin_http::init())
+        // Ao iniciar com o sistema, abre escondido na bandeja (--hidden)
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--hidden"]),
+        ))
         .invoke_handler(tauri::generate_handler![crop_gif, ai_usage, pc_status, github_status])
+        .setup(|app| {
+            let show = MenuItem::with_id(app, "show", "Abrir", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Sair", true, None::<&str>)?;
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().cloned().ok_or("sem ícone")?)
+                .tooltip("Smart Screen")
+                .menu(&Menu::with_items(app, &[&show, &quit])?)
+                .on_menu_event(|app, e| match e.id.as_ref() {
+                    "show" => show_main(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                // No Linux o clique no ícone não gera evento (só o menu); isso vale para Windows/macOS
+                .on_tray_icon_event(|tray, e| {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = e {
+                        show_main(tray.app_handle());
+                    }
+                })
+                .build(app)?;
+            if !std::env::args().any(|a| a == "--hidden") {
+                show_main(app.handle());
+            }
+            Ok(())
+        })
+        // Fechar a janela só esconde: o app segue na bandeja enviando os painéis
+        .on_window_event(|w, e| {
+            if let WindowEvent::CloseRequested { api, .. } = e {
+                api.prevent_close();
+                let _ = w.hide();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("erro ao iniciar o app");
 }

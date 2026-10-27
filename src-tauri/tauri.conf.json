@@ -3,15 +3,32 @@
   "productName": "SmartScreen",
   "version": "0.1.0",
   "identifier": "com.gui.smartscreen",
-  "build": { "frontendDist": "../ui" },
+  "build": {
+    "frontendDist": "../ui"
+  },
   "app": {
     "withGlobalTauri": true,
-    "windows": [{ "label": "main", "title": "Smart Screen", "width": 460, "height": 860 }],
-    "security": { "csp": null }
+    "windows": [
+      {
+        "label": "main",
+        "title": "Smart Screen",
+        "width": 460,
+        "height": 860,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png"]
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png"
+    ]
   }
 }

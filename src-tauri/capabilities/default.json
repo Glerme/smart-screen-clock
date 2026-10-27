@@ -1,11 +1,21 @@
 {
   "identifier": "default",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     {
       "identifier": "http:default",
-      "allow": [{ "url": "http://*" }, { "url": "http://*:*" }]
-    }
+      "allow": [
+        {
+          "url": "http://*"
+        },
+        {
+          "url": "http://*:*"
+        }
+      ]
+    },
+    "autostart:default"
   ]
 }

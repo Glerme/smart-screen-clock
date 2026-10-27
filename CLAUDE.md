@@ -13,7 +13,7 @@ pnpm build            # gera o instalador
 cd src-tauri && cargo test
 ```
 
-Dependências do sistema (CachyOS/Arch): `rustup` (toolchain stable) e `webkit2gtk-4.1`.
+Dependências do sistema (CachyOS/Arch): `rustup` (toolchain stable), `webkit2gtk-4.1` e `libayatana-appindicator` (ícone da bandeja; sem ela o app não abre no Linux).
 
 ## Estrutura
 
