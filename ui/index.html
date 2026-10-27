@@ -38,8 +38,16 @@
   .photo { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
   .photo span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   button.small { padding: 3px 8px; font-size: 12px; }
+  button:disabled { opacity: .5; cursor: default; }
+  #aiCanvas { display: block; width: min(100%, 360px); margin: 4px auto 8px; border-radius: 6px; }
+  progress { width: 100%; height: 10px; margin: 4px 0 6px; accent-color: var(--accent); }
   #status { position: sticky; bottom: 0; padding: 8px 10px; border-radius: 8px; background: var(--card); border: 1px solid var(--line); color: var(--muted); }
   #status.err { color: var(--danger); }
+  body.busy #status::before { content: ''; display: inline-block; width: 11px; height: 11px; margin-right: 8px; vertical-align: -1px;
+    border: 2px solid var(--accent); border-top-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
+  body.busy { cursor: progress; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { body.busy #status::before { animation-duration: 2s; } }
   #app[hidden] { display: none; }
 </style>
 </head>
@@ -117,7 +125,24 @@
         <option value="60">1 min</option><option value="180">3 min</option><option value="300">5 min</option>
       </select>
     </div>
-    <div class="row"><span>Espaço usado</span><span class="muted" id="storage"></span></div>
+  </section>
+
+  <section>
+    <h2>Painel de IA (tela Photo)</h2>
+    <canvas id="aiCanvas" width="240" height="240" aria-label="Prévia do painel de limites das IAs"></canvas>
+    <div class="row"><label for="aiAuto">Enviar para a tela a cada 5 min</label><input type="checkbox" id="aiAuto"></div>
+    <div class="row"><span class="muted" id="aiInfo">Ative a tela Photo para ver o painel.</span><button id="aiNow">Enviar agora</button></div>
+  </section>
+
+  <section>
+    <h2>Memória da tela</h2>
+    <progress id="storageBar" max="1" value="0" aria-label="Memória usada"></progress>
+    <div class="row"><span>Usado</span><span class="muted" id="storageUsed"></span></div>
+    <div class="row"><span>Livre</span><span class="muted" id="storageFree"></span></div>
+    <div class="row">
+      <span>Apagar todas as fotos</span>
+      <button class="danger" id="clearPhotos">Limpar</button>
+    </div>
   </section>
 
   <section>
@@ -154,10 +179,30 @@ let base = '';
 
 function status(msg, err = false) { $('status').textContent = msg; $('status').classList.toggle('err', err); }
 
-async function req(path, opts) {
-  const res = await httpFetch(base + path, opts);
-  if (!res.ok) throw new Error(`HTTP ${res.status} em ${path}`);
-  return res;
+// Indicador de carregamento: fica ativo enquanto houver qualquer operação pendente
+let pending = 0;
+function track(promise) {
+  pending++;
+  document.body.classList.add('busy');
+  return promise.finally(() => { if (--pending === 0) document.body.classList.remove('busy'); });
+}
+
+// Uma requisição por vez: o ESP da tela trava com várias simultâneas (ex.: arrastar o slider)
+let queue = Promise.resolve();
+function req(path, opts = {}) {
+  const run = queue.then(async () => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), opts.method === 'POST' ? 60000 : 10000);
+    try {
+      const res = await httpFetch(base + path, { ...opts, signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status} em ${path}`);
+      return res;
+    } catch (e) {
+      throw ctrl.signal.aborted ? new Error(`a tela não respondeu (${path})`) : e;
+    } finally { clearTimeout(timer); }
+  });
+  queue = run.catch(() => {});
+  return track(run);
 }
 
 async function set(key, value) {
@@ -213,6 +258,7 @@ async function connect() {
     }));
 
     await loadPhotos();
+    aiRefresh(false);
     $('app').hidden = false;
     status(`Conectado a ${ip}`);
   } catch (e) {
@@ -259,22 +305,40 @@ $('gifFile').onchange = async e => {
   try {
     status('Recortando GIF para 80×80...');
     // A tela só aceita 80×80: o Rust corta o centro em quadrado e redimensiona, mantendo a animação
-    gif = await window.__TAURI__.core.invoke('crop_gif', new Uint8Array(await file.arrayBuffer()));
+    gif = await track(window.__TAURI__.core.invoke('crop_gif', new Uint8Array(await file.arrayBuffer())));
   } catch (err) { return status(`Não consegui recortar o GIF: ${err}`, true); }
   const form = new FormData();
   form.append('imageFile', new Blob([gif], { type: 'image/gif' }), '4.gif'); // mesmo nome fixo que a página original usa
   status('Enviando GIF...');
-  try { await req('/upload', { method: 'POST', body: form }); status('GIF enviado. Escolha "Personalizado" para exibir.'); }
+  try { await req('/upload', { method: 'POST', body: form }); status('GIF enviado. Escolha "Personalizado" para exibir.'); loadPhotos().catch(() => {}); }
   catch (err) { status(`Falha no envio: ${err.message}`, true); }
 };
 
 const fmtSize = b => b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(2)} MB`;
 let freeSpace = Infinity;
+let photoNames = [];
+
+// A tela não tem "formatar": apaga foto por foto pela mesma rota do botão Apagar
+$('clearPhotos').onclick = async () => {
+  if (!confirm(`Apagar as ${photoNames.length} fotos da tela? Não dá para desfazer.`)) return;
+  let ok = 0;
+  for (const name of photoNames) {
+    status(`Apagando ${name}...`);
+    try { await req('/photo/delete?name=' + encodeURIComponent(name)); ok++; } catch {}
+  }
+  try { await loadPhotos(); } catch {}
+  status(ok === photoNames.length ? `${ok} fotos apagadas` : `Apaguei ${ok}; ${photoNames.length} não consegui apagar`, ok !== photoNames.length);
+};
 
 async function loadPhotos() {
   const data = await req('/photo/list').then(r => r.json());
   freeSpace = data.total - data.used;
-  $('storage').textContent = `${fmtSize(data.used)} de ${fmtSize(data.total)}`;
+  photoNames = data.files.map(f => f.name);
+  $('storageBar').max = data.total;
+  $('storageBar').value = data.used;
+  $('storageUsed').textContent = `${fmtSize(data.used)} de ${fmtSize(data.total)} (${Math.round(data.used / data.total * 100)}%)`;
+  $('storageFree').textContent = fmtSize(freeSpace);
+  $('clearPhotos').disabled = !photoNames.length;
   if (data.interval) $('photoInterval').value = data.interval;
   $('photos').replaceChildren(...data.files.map(f => {
     const row = document.createElement('div');
@@ -324,7 +388,7 @@ $('photoFile').onchange = async e => {
   try {
     status('Preparando imagem 240×240...');
     if (file.type === 'image/gif') {
-      const gif = await window.__TAURI__.core.invoke('crop_gif', new Uint8Array(await file.arrayBuffer()), { headers: { size: '240' } });
+      const gif = await track(window.__TAURI__.core.invoke('crop_gif', new Uint8Array(await file.arrayBuffer()), { headers: { size: '240' } }));
       blob = new Blob([gif], { type: 'image/gif' });
       name = safeName(file.name, '.gif');
     } else {
@@ -343,6 +407,76 @@ $('photoFile').onchange = async e => {
 $('photoInterval').onchange = async e => {
   try { await req('/photo/interval?val=' + e.target.value); status('Intervalo das fotos salvo'); } catch (err) { status(err.message, true); }
 };
+
+// ---- Painel de IA: imagem 240×240 com os limites do Claude e do Codex, enviada como foto ----
+const AI_FILE = 'ia.jpg';
+const AI_EVERY = 5 * 60 * 1000; // cada envio regrava a flash da tela; não diminuir muito
+const AI_PROVIDERS = [['claude', 'Claude', '#d97757'], ['codex', 'Codex', '#10a37f']];
+
+// Tempo até renovar, no estilo "3h 59min" / "2d 21h"
+function fmtLeft(ms) {
+  const m = Math.ceil(ms / 6e4), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  return d ? `${d}d ${h % 24}h` : h ? `${h}h ${String(m % 60).padStart(2, '0')}m` : `${m}min`;
+}
+
+// Layout para a tela física de ~1,5": grade 2×2 de anéis (linha = IA, coluna = janela)
+function drawAi(data) {
+  const ctx = $('aiCanvas').getContext('2d');
+  const now = Date.now();
+  const text = (t, x, y, font, color, align = 'center', max) => {
+    ctx.font = font; ctx.fillStyle = color; ctx.textAlign = align; ctx.fillText(t, x, y, max);
+  };
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, 240, 240);
+  AI_PROVIDERS.forEach(([key, name, color], row) => {
+    const d = data[key];
+    const y = row * 120;
+    if (row) { ctx.fillStyle = '#30363d'; ctx.fillRect(10, y, 220, 1); }
+    text(name, 8, y + 17, 'bold 16px sans-serif', color, 'left');
+    if (row === 0) text(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }), 232, y + 16, '13px sans-serif', '#8b949e', 'right');
+    if (d.error) { text(d.error, 120, y + 66, 'bold 15px sans-serif', '#ff7b72', 'center', 224); return; }
+    d.windows.forEach((w, col) => {
+      const cx = 60 + col * 120, cy = y + 60;
+      const reset = w.resets_at ? new Date(w.resets_at) : null;
+      const live = reset && reset > now;
+      const pct = live || !reset ? Math.round(w.pct ?? 0) : 0; // janela já renovou
+      ctx.lineWidth = 8;
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = '#30363d';
+      ctx.beginPath(); ctx.arc(cx, cy, 31, 0, 2 * Math.PI); ctx.stroke();
+      if (pct > 0) {
+        ctx.strokeStyle = pct >= 80 ? '#ff5f56' : pct >= 50 ? '#f2cc60' : '#3fb950';
+        ctx.beginPath(); ctx.arc(cx, cy, 31, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * Math.min(pct, 100) / 100); ctx.stroke();
+      }
+      text(pct + '%', cx, cy + 7, 'bold 20px sans-serif', '#ffffff');
+      text(`${w.label} · ${live ? fmtLeft(reset - now) : 'ok'}`, cx, y + 113, 'bold 14px sans-serif', '#c9d1d9', 'center', 116);
+    });
+  });
+}
+
+async function aiRefresh(upload) {
+  let data;
+  try { data = await track(window.__TAURI__.core.invoke('ai_usage')); }
+  catch (e) { return status(`Falha ao ler os limites: ${e}`, true); }
+  drawAi(data);
+  if (!upload) return;
+  const blob = await new Promise(ok => $('aiCanvas').toBlob(ok, 'image/jpeg', 0.85));
+  const form = new FormData();
+  form.append('file', blob, AI_FILE);
+  try {
+    await req('/photo/upload', { method: 'POST', body: form });
+    $('aiInfo').textContent = `Enviado às ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
+    loadPhotos().catch(() => {});
+  } catch (e) { status(`Falha ao enviar o painel: ${e.message}`, true); }
+}
+
+$('aiNow').onclick = () => aiRefresh(true);
+try { $('aiAuto').checked = localStorage.getItem('aiAuto') === '1'; } catch {}
+$('aiAuto').onchange = e => {
+  try { localStorage.setItem('aiAuto', e.target.checked ? '1' : '0'); } catch {}
+  if (e.target.checked && base) aiRefresh(true);
+};
+setInterval(() => { if ($('aiAuto').checked && !$('app').hidden) aiRefresh(true); }, AI_EVERY);
 
 $('restart').onclick = async () => {
   if (!confirm('Reiniciar a tela?')) return;
