@@ -132,7 +132,14 @@
     <canvas id="panelCanvas" width="240" height="240" aria-label="Prévia do painel"></canvas>
     <div class="muted" id="panelCaption" style="text-align:center"></div>
     <div id="panels"></div>
-    <div class="row muted" id="panelInfo">Marcados são enviados a cada 5 min (só se mudarem). Ative a tela Photo.</div>
+    <div class="row">
+      <label for="panelEvery">Enviar marcados a cada</label>
+      <select id="panelEvery">
+        <option value="5">5 min</option><option value="10">10 min</option><option value="15">15 min</option>
+        <option value="30">30 min</option><option value="60">1 hora</option>
+      </select>
+    </div>
+    <div class="row muted" id="panelInfo">Só reenvia o que mudou. Ative a tela Photo para ver os painéis.</div>
   </section>
 
   <section>
@@ -165,6 +172,8 @@
   </section>
 
   <section>
+    <div class="row"><label for="autostart">Iniciar com o sistema (na bandeja)</label><input type="checkbox" id="autostart"></div>
+    <div class="row muted">Fechar a janela deixa o app rodando na bandeja. Para sair, use "Sair" no ícone da bandeja.</div>
     <div class="row"><span>Reiniciar a tela</span><button class="danger" id="restart">Reiniciar</button></div>
   </section>
 </div>
@@ -410,7 +419,6 @@ $('photoInterval').onchange = async e => {
 };
 
 // ---- Painéis: imagens 240×240 geradas no app e enviadas como fotos para a tela Photo ----
-const PANEL_EVERY = 5 * 60 * 1000; // cada envio regrava a flash da tela; não diminuir muito
 const AI_PROVIDERS = [['claude', 'Claude', '#d97757'], ['codex', 'Codex', '#10a37f']];
 
 // Tempo até renovar, no estilo "3h 59min" / "2d 21h"
@@ -565,10 +573,34 @@ $('panels').replaceChildren(...PANELS.map(p => {
   return row;
 }));
 
-setInterval(async () => {
-  if ($('app').hidden) return;
+async function panelTick() {
+  if (!PANELS.some(panelOn)) return;
+  // Iniciado com o sistema, a tela pode não estar acessível ainda: tenta reconectar a cada ciclo
+  if ($('app').hidden) { await connect(); if ($('app').hidden) return; }
   for (const p of PANELS) if (panelOn(p)) await refreshPanel(p, true);
-}, PANEL_EVERY);
+}
+
+let panelTimer;
+function schedulePanels() {
+  clearInterval(panelTimer);
+  panelTimer = setInterval(panelTick, Number($('panelEvery').value) * 60000);
+}
+try { $('panelEvery').value = localStorage.getItem('panelEvery') || '5'; } catch {}
+if (!$('panelEvery').value) $('panelEvery').value = '5';
+$('panelEvery').onchange = e => {
+  try { localStorage.setItem('panelEvery', e.target.value); } catch {}
+  schedulePanels();
+  status(`Painéis serão enviados a cada ${e.target.value} min`);
+};
+schedulePanels();
+
+// Iniciar com o sistema (plugin autostart): abre escondido na bandeja
+const autostart = cmd => window.__TAURI__.core.invoke(`plugin:autostart|${cmd}`);
+autostart('is_enabled').then(on => { $('autostart').checked = on; }).catch(() => { $('autostart').disabled = true; });
+$('autostart').onchange = async e => {
+  try { await autostart(e.target.checked ? 'enable' : 'disable'); status(e.target.checked ? 'O app vai abrir junto com o sistema, na bandeja' : 'Início automático desligado'); }
+  catch (err) { e.target.checked = !e.target.checked; status(`Não consegui mudar o início automático: ${err}`, true); }
+};
 
 $('restart').onclick = async () => {
   if (!confirm('Reiniciar a tela?')) return;
@@ -579,7 +611,7 @@ $('restart').onclick = async () => {
 let saved = null;
 try { saved = localStorage.getItem('ip'); } catch {}
 $('ip').value = saved || '192.168.1.121';
-connect();
+connect().then(() => { if (!$('app').hidden) panelTick(); });
 </script>
 </body>
 </html>

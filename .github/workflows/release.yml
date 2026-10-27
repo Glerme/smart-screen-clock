@@ -1,0 +1,73 @@
+name: Release
+
+# Ao mergear um PR na main: cria a próxima tag (patch +1), compila o app e publica o Release
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-22.04 # glibc mais antiga: o AppImage roda em mais distros
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0 # precisa das tags para calcular a versão
+
+      - name: Calcular versão
+        id: version
+        run: |
+          last=$(git tag -l 'v*' --sort=-v:refname | head -n1)
+          if [ -z "$last" ]; then
+            next=$(jq -r .version src-tauri/tauri.conf.json)
+          else
+            IFS=. read -r major minor patch <<< "${last#v}"
+            next="$major.$minor.$((patch + 1))"
+          fi
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "Versão: $next"
+
+      - name: Dependências do sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - uses: pnpm/action-setup@v4 # usa a versão de "packageManager" do package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: pnpm install --frozen-lockfile
+
+      # A versão vem da tag; a mudança fica só no CI, sem commit
+      - name: Aplicar versão
+        run: |
+          jq --arg v "${{ steps.version.outputs.version }}" '.version = $v' src-tauri/tauri.conf.json > tauri.conf.tmp
+          mv tauri.conf.tmp src-tauri/tauri.conf.json
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v${{ steps.version.outputs.version }}
+          releaseName: SmartScreen v${{ steps.version.outputs.version }}
+          releaseBody: |
+            ${{ github.event.pull_request.title }} (#${{ github.event.pull_request.number }})
+
+            Baixe o **AppImage** para rodar em qualquer Linux, ou o `.deb` / `.rpm`.
+          releaseDraft: false
+          prerelease: false
