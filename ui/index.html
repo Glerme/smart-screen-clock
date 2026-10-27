@@ -39,7 +39,7 @@
   .photo span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   button.small { padding: 3px 8px; font-size: 12px; }
   button:disabled { opacity: .5; cursor: default; }
-  #aiCanvas { display: block; width: min(100%, 360px); margin: 4px auto 8px; border-radius: 6px; }
+  #panelCanvas { display: block; width: min(100%, 360px); margin: 4px auto 8px; border-radius: 6px; }
   progress { width: 100%; height: 10px; margin: 4px 0 6px; accent-color: var(--accent); }
   #status { position: sticky; bottom: 0; padding: 8px 10px; border-radius: 8px; background: var(--card); border: 1px solid var(--line); color: var(--muted); }
   #status.err { color: var(--danger); }
@@ -128,10 +128,11 @@
   </section>
 
   <section>
-    <h2>Painel de IA (tela Photo)</h2>
-    <canvas id="aiCanvas" width="240" height="240" aria-label="Prévia do painel de limites das IAs"></canvas>
-    <div class="row"><label for="aiAuto">Enviar para a tela a cada 5 min</label><input type="checkbox" id="aiAuto"></div>
-    <div class="row"><span class="muted" id="aiInfo">Ative a tela Photo para ver o painel.</span><button id="aiNow">Enviar agora</button></div>
+    <h2>Painéis (tela Photo)</h2>
+    <canvas id="panelCanvas" width="240" height="240" aria-label="Prévia do painel"></canvas>
+    <div class="muted" id="panelCaption" style="text-align:center"></div>
+    <div id="panels"></div>
+    <div class="row muted" id="panelInfo">Marcados são enviados a cada 5 min (só se mudarem). Ative a tela Photo.</div>
   </section>
 
   <section>
@@ -258,7 +259,7 @@ async function connect() {
     }));
 
     await loadPhotos();
-    aiRefresh(false);
+    refreshPanel(PANELS[0], false);
     $('app').hidden = false;
     status(`Conectado a ${ip}`);
   } catch (e) {
@@ -408,9 +409,8 @@ $('photoInterval').onchange = async e => {
   try { await req('/photo/interval?val=' + e.target.value); status('Intervalo das fotos salvo'); } catch (err) { status(err.message, true); }
 };
 
-// ---- Painel de IA: imagem 240×240 com os limites do Claude e do Codex, enviada como foto ----
-const AI_FILE = 'ia.jpg';
-const AI_EVERY = 5 * 60 * 1000; // cada envio regrava a flash da tela; não diminuir muito
+// ---- Painéis: imagens 240×240 geradas no app e enviadas como fotos para a tela Photo ----
+const PANEL_EVERY = 5 * 60 * 1000; // cada envio regrava a flash da tela; não diminuir muito
 const AI_PROVIDERS = [['claude', 'Claude', '#d97757'], ['codex', 'Codex', '#10a37f']];
 
 // Tempo até renovar, no estilo "3h 59min" / "2d 21h"
@@ -420,8 +420,7 @@ function fmtLeft(ms) {
 }
 
 // Layout para a tela física de ~1,5": grade 2×2 de anéis (linha = IA, coluna = janela)
-function drawAi(data) {
-  const ctx = $('aiCanvas').getContext('2d');
+function drawAi(ctx, data) {
   const now = Date.now();
   const text = (t, x, y, font, color, align = 'center', max) => {
     ctx.font = font; ctx.fillStyle = color; ctx.textAlign = align; ctx.fillText(t, x, y, max);
@@ -440,43 +439,136 @@ function drawAi(data) {
       const reset = w.resets_at ? new Date(w.resets_at) : null;
       const live = reset && reset > now;
       const pct = live || !reset ? Math.round(w.pct ?? 0) : 0; // janela já renovou
-      ctx.lineWidth = 8;
-      ctx.lineCap = 'round';
-      ctx.strokeStyle = '#30363d';
-      ctx.beginPath(); ctx.arc(cx, cy, 31, 0, 2 * Math.PI); ctx.stroke();
-      if (pct > 0) {
-        ctx.strokeStyle = pct >= 80 ? '#ff5f56' : pct >= 50 ? '#f2cc60' : '#3fb950';
-        ctx.beginPath(); ctx.arc(cx, cy, 31, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * Math.min(pct, 100) / 100); ctx.stroke();
-      }
-      text(pct + '%', cx, cy + 7, 'bold 20px sans-serif', '#ffffff');
+      ring(ctx, cx, cy, pct, pct + '%', levelColor(pct));
       text(`${w.label} · ${live ? fmtLeft(reset - now) : 'ok'}`, cx, y + 113, 'bold 14px sans-serif', '#c9d1d9', 'center', 116);
     });
   });
 }
 
-async function aiRefresh(upload) {
-  let data;
-  try { data = await track(window.__TAURI__.core.invoke('ai_usage')); }
-  catch (e) { return status(`Falha ao ler os limites: ${e}`, true); }
-  drawAi(data);
-  if (!upload) return;
-  const blob = await new Promise(ok => $('aiCanvas').toBlob(ok, 'image/jpeg', 0.85));
-  const form = new FormData();
-  form.append('file', blob, AI_FILE);
-  try {
-    await req('/photo/upload', { method: 'POST', body: form });
-    $('aiInfo').textContent = `Enviado às ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
-    loadPhotos().catch(() => {});
-  } catch (e) { status(`Falha ao enviar o painel: ${e.message}`, true); }
+// Verde / amarelo / vermelho conforme o uso
+const levelColor = (pct, warn = 50, crit = 80) => pct >= crit ? '#ff5f56' : pct >= warn ? '#f2cc60' : '#3fb950';
+
+function ring(ctx, cx, cy, pct, label, color) {
+  ctx.lineWidth = 8;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = '#30363d';
+  ctx.beginPath(); ctx.arc(cx, cy, 31, 0, 2 * Math.PI); ctx.stroke();
+  if (pct > 0) {
+    ctx.strokeStyle = color;
+    ctx.beginPath(); ctx.arc(cx, cy, 31, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * Math.min(pct, 100) / 100); ctx.stroke();
+  }
+  ctx.font = 'bold 20px sans-serif'; ctx.fillStyle = '#ffffff'; ctx.textAlign = 'center';
+  ctx.fillText(label, cx, cy + 7, 54);
 }
 
-$('aiNow').onclick = () => aiRefresh(true);
-try { $('aiAuto').checked = localStorage.getItem('aiAuto') === '1'; } catch {}
-$('aiAuto').onchange = e => {
-  try { localStorage.setItem('aiAuto', e.target.checked ? '1' : '0'); } catch {}
-  if (e.target.checked && base) aiRefresh(true);
+function caption(ctx, t, x, y, color = '#c9d1d9', font = 'bold 14px sans-serif', align = 'center', max = 116) {
+  ctx.font = font; ctx.fillStyle = color; ctx.textAlign = align;
+  t = String(t);
+  if (ctx.measureText(t).width > max) { // corta com "…" em vez de espremer o texto
+    while (t && ctx.measureText(t + '…').width > max) t = t.slice(0, -1);
+    t += '…';
+  }
+  ctx.fillText(t, x, y);
+}
+
+// Status do PC: grade 2×2 de anéis (CPU, RAM, disco, temperatura)
+function drawPc(ctx, d) {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, 240, 240);
+  const cells = [
+    ['CPU', d.cpu, levelColor(d.cpu), `${Math.round(d.cpu)}%`],
+    [`RAM ${Math.round(d.ram_used_gb)}/${Math.round(d.ram_total_gb)}G`, d.ram, levelColor(d.ram, 70, 90), `${Math.round(d.ram)}%`],
+    [d.disk == null ? 'Disco' : `Livre ${Math.round(d.disk_free_gb)}G`, d.disk ?? 0, levelColor(d.disk ?? 0, 75, 90), d.disk == null ? '?' : `${Math.round(d.disk)}%`],
+    ['Temp CPU', d.temp ?? 0, levelColor(d.temp ?? 0, 65, 85), d.temp == null ? '?' : `${Math.round(d.temp)}°`],
+  ];
+  cells.forEach(([label, pct, color, center], i) => {
+    const cx = 60 + (i % 2) * 120, y = Math.floor(i / 2) * 120;
+    ring(ctx, cx, y + 52, pct, center, color);
+    caption(ctx, label, cx, y + 108);
+  });
+  ctx.fillStyle = '#30363d';
+  ctx.fillRect(10, 119, 220, 1);
+}
+
+// GitHub: PRs abertos, revisões pedidas e os 3 PRs mais recentes com o status do CI
+const CI_COLOR = { SUCCESS: '#3fb950', FAILURE: '#ff5f56', ERROR: '#ff5f56', PENDING: '#f2cc60', EXPECTED: '#f2cc60' };
+function drawGithub(ctx, d) {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, 240, 240);
+  caption(ctx, 'GitHub', 10, 24, '#ffffff', 'bold 20px sans-serif', 'left');
+  caption(ctx, '@' + d.login, 230, 23, '#8b949e', '14px sans-serif', 'right', 120);
+  [[d.open, 'PRs abertos', '#58a6ff'], [d.reviews, 'p/ revisar', d.reviews ? '#f2cc60' : '#8b949e']].forEach(([n, label, color], i) => {
+    caption(ctx, String(n), 60 + i * 120, 76, color, 'bold 40px sans-serif');
+    caption(ctx, label, 60 + i * 120, 98, '#c9d1d9', '14px sans-serif');
+  });
+  ctx.fillStyle = '#30363d';
+  ctx.fillRect(10, 110, 220, 1);
+  if (!d.prs.length) return caption(ctx, 'Nenhum PR aberto', 120, 170, '#8b949e', '16px sans-serif', 'center', 220);
+  d.prs.forEach((pr, i) => {
+    const y = 114 + i * 42;
+    ctx.fillStyle = CI_COLOR[pr.ci] || '#6e7681';
+    ctx.beginPath(); ctx.arc(16, y + 13, 5, 0, 2 * Math.PI); ctx.fill();
+    caption(ctx, `${pr.repo} #${pr.number}`, 28, y + 18, '#ffffff', 'bold 15px sans-serif', 'left', 202);
+    caption(ctx, pr.title, 10, y + 36, '#a8b1bb', '14px sans-serif', 'left', 220);
+  });
+}
+
+const PANELS = [
+  { id: 'ia', name: 'Limites de IA', cmd: 'ai_usage', draw: drawAi },
+  { id: 'pc', name: 'Status do PC', cmd: 'pc_status', draw: drawPc },
+  { id: 'github', name: 'GitHub', cmd: 'github_status', draw: drawGithub },
+];
+const lastSent = {}; // imagem do último envio de cada painel, para não regravar a flash à toa
+
+async function refreshPanel(p, upload) {
+  let data;
+  try { data = await track(window.__TAURI__.core.invoke(p.cmd)); }
+  catch (e) { return status(`${p.name}: ${e}`, true); }
+  const c = $('panelCanvas');
+  p.draw(c.getContext('2d'), data);
+  $('panelCaption').textContent = p.name;
+  if (!upload) return;
+  const url = c.toDataURL('image/jpeg', 0.85);
+  if (url === lastSent[p.id]) return;
+  const blob = await new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.85));
+  const form = new FormData();
+  form.append('file', blob, `${p.id}.jpg`);
+  try {
+    await req('/photo/upload', { method: 'POST', body: form });
+    lastSent[p.id] = url;
+    $('panelInfo').textContent = `${p.name} enviado às ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
+    loadPhotos().catch(() => {});
+  } catch (e) { status(`Falha ao enviar ${p.name}: ${e.message}`, true); }
+}
+
+const panelOn = p => {
+  try {
+    const v = localStorage.getItem('panel:' + p.id);
+    return v !== null ? v === '1' : p.id === 'ia' && localStorage.getItem('aiAuto') === '1'; // aiAuto: opção da versão anterior
+  } catch { return false; }
 };
-setInterval(() => { if ($('aiAuto').checked && !$('app').hidden) aiRefresh(true); }, AI_EVERY);
+
+$('panels').replaceChildren(...PANELS.map(p => {
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.innerHTML = `<label class="photo"><input type="checkbox"><span></span></label><span><button class="small">Ver</button> <button class="small">Enviar</button></span>`;
+  const cb = row.querySelector('input');
+  row.querySelector('label span').textContent = p.name;
+  cb.checked = panelOn(p);
+  cb.onchange = () => {
+    try { localStorage.setItem('panel:' + p.id, cb.checked ? '1' : '0'); } catch {}
+    if (cb.checked && base) refreshPanel(p, true);
+  };
+  const [see, send] = row.querySelectorAll('button');
+  see.onclick = () => refreshPanel(p, false);
+  send.onclick = () => { delete lastSent[p.id]; refreshPanel(p, true); };
+  return row;
+}));
+
+setInterval(async () => {
+  if ($('app').hidden) return;
+  for (const p of PANELS) if (panelOn(p)) await refreshPanel(p, true);
+}, PANEL_EVERY);
 
 $('restart').onclick = async () => {
   if (!confirm('Reiniciar a tela?')) return;

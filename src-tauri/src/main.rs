@@ -143,11 +143,98 @@ async fn ai_usage(app: tauri::AppHandle) -> Value {
     json!({ "claude": pack(claude_usage(&home).await), "codex": pack(codex_usage(&home)) })
 }
 
+/// CPU, RAM, disco (/) e temperatura da CPU neste PC.
+#[tauri::command]
+async fn pc_status() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let mut sys = sysinfo::System::new();
+        // A CPU precisa de duas leituras com intervalo para calcular o uso
+        sys.refresh_cpu_usage();
+        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.max(Duration::from_millis(500)));
+        sys.refresh_cpu_usage();
+        sys.refresh_memory();
+        let gb = |b: u64| b as f64 / 1e9;
+        let (total, avail) = (sys.total_memory(), sys.available_memory());
+        let disks = sysinfo::Disks::new_with_refreshed_list();
+        let root = disks.list().iter().find(|d| d.mount_point() == Path::new("/"));
+        let temps = sysinfo::Components::new_with_refreshed_list();
+        let cpu_temp = |want: &[&str]| {
+            temps
+                .list()
+                .iter()
+                .filter(|c| want.is_empty() || want.iter().any(|w| c.label().contains(w)))
+                .filter_map(|c| c.temperature())
+                .fold(None, |m: Option<f32>, t| Some(m.map_or(t, |m| m.max(t))))
+        };
+        // Tctl (AMD) / Package (Intel) é a temperatura da CPU; senão, a maior disponível
+        let temp = cpu_temp(&["Tctl", "Package", "k10temp", "coretemp"]).or_else(|| cpu_temp(&[]));
+        json!({
+            "cpu": sys.global_cpu_usage(),
+            "ram": if total > 0 { (total - avail) as f64 / total as f64 * 100.0 } else { 0.0 },
+            "ram_used_gb": gb(total - avail),
+            "ram_total_gb": gb(total),
+            "disk": root.map(|d| (d.total_space() - d.available_space()) as f64 / d.total_space().max(1) as f64 * 100.0),
+            "disk_free_gb": root.map(|d| gb(d.available_space())),
+            "temp": temp,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+const GITHUB_QUERY: &str = r#"query {
+  viewer {
+    login
+    pullRequests(states: OPEN, first: 3, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      totalCount
+      nodes { title number repository { name } commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }
+    }
+  }
+  search(query: "is:open is:pr review-requested:@me archived:false", type: ISSUE, first: 1) { issueCount }
+}"#;
+
+/// PRs abertos do usuário, revisões pedidas a ele e o CI de cada PR, via o `gh` já logado.
+#[tauri::command]
+async fn github_status() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let out = std::process::Command::new("gh")
+            .args(["api", "graphql", "-f", &format!("query={GITHUB_QUERY}")])
+            .output()
+            .map_err(|_| "gh não encontrado".to_string())?;
+        if !out.status.success() {
+            return Err("gh sem login ou sem rede".to_string());
+        }
+        let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
+        let prs = &v["data"]["viewer"]["pullRequests"];
+        let list: Vec<Value> = prs["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|p| {
+                json!({
+                    "title": p["title"],
+                    "repo": p["repository"]["name"],
+                    "number": p["number"],
+                    "ci": p["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"],
+                })
+            })
+            .collect();
+        Ok(json!({
+            "login": v["data"]["viewer"]["login"],
+            "open": prs["totalCount"],
+            "reviews": v["data"]["search"]["issueCount"],
+            "prs": list,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn main() {
     tauri::Builder::default()
         // HTTP pelo Rust: a tela não envia cabeçalhos CORS, então fetch do webview falharia
         .plugin(tauri_plugin_http::init())
-        .invoke_handler(tauri::generate_handler![crop_gif, ai_usage])
+        .invoke_handler(tauri::generate_handler![crop_gif, ai_usage, pc_status, github_status])
         .run(tauri::generate_context!())
         .expect("erro ao iniciar o app");
 }
@@ -195,5 +282,23 @@ mod tests {
         assert_eq!(w[1]["label"], "Semana");
         assert_eq!(w[1]["pct"], 40.0);
         assert!(codex_usage(Path::new("/nao/existe")).is_err());
+    }
+
+    #[test]
+    fn status_do_pc_tem_valores_validos() {
+        let v = tauri::async_runtime::block_on(pc_status()).unwrap();
+        println!("{v}");
+        for k in ["cpu", "ram", "disk"] {
+            let x = v[k].as_f64().unwrap();
+            assert!((0.0..=100.0).contains(&x), "{k} = {x}");
+        }
+    }
+
+    #[test]
+    #[ignore = "usa rede e o login do gh"]
+    fn github_responde() {
+        let v = tauri::async_runtime::block_on(github_status()).unwrap();
+        println!("{v}");
+        assert!(v["open"].is_number());
     }
 }
