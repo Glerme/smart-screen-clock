@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Screen</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #fff; --text: #1d1f23; --muted: #6b7280;
+    --line: #e3e5e8; --accent: #1f6feb; --danger: #d1242f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111317; --card: #1b1e24; --text: #e8eaed; --muted: #9aa0a6; --line: #2c3038; --accent: #4c8dff; --danger: #ff6b6b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; }
+  .row + .row { border-top: 1px solid var(--line); }
+  :root { color-scheme: light dark; }
+  input[type=text], select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background-color: var(--bg); color: var(--text); font: inherit; }
+  /* appearance:none: sem isso o WebKitGTK usa o tema do GTK e o texto some no modo escuro */
+  select { appearance: none; -webkit-appearance: none; padding-right: 26px; cursor: pointer;
+    background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position: right 13px center, right 8px center; background-size: 5px 5px; background-repeat: no-repeat; }
+  select option { background: var(--card); color: var(--text); }
+  input[type=file] { color: var(--muted); font: inherit; max-width: 60%; }
+  input[type=file]::file-selector-button { margin-right: 8px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; cursor: pointer; }
+  input[type=text] { flex: 1; min-width: 0; }
+  input[type=range] { flex: 1; accent-color: var(--accent); }
+  input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
+  button { padding: 6px 12px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+  button.danger { background: var(--danger); }
+  .val { width: 2.5em; text-align: right; color: var(--muted); }
+  .muted { color: var(--muted); }
+  .photo { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+  .photo span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button.small { padding: 3px 8px; font-size: 12px; }
+  #status { position: sticky; bottom: 0; padding: 8px 10px; border-radius: 8px; background: var(--card); border: 1px solid var(--line); color: var(--muted); }
+  #status.err { color: var(--danger); }
+  #app[hidden] { display: none; }
+</style>
+</head>
+<body>
+<h1>Smart Screen</h1>
+
+<section>
+  <div class="row">
+    <label for="ip">IP</label>
+    <input type="text" id="ip">
+    <button id="connect">Conectar</button>
+  </div>
+</section>
+
+<div id="app" hidden>
+  <section>
+    <h2>Cidade</h2>
+    <div class="row">
+      <input type="text" id="city">
+      <button id="saveCity">Salvar</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Telas</h2>
+    <div id="themes"></div>
+    <div class="row">
+      <label for="interval">Trocar a cada</label>
+      <select id="interval">
+        <option value="0">Não trocar</option><option value="5">5 s</option><option value="10">10 s</option>
+        <option value="15">15 s</option><option value="30">30 s</option><option value="60">1 min</option>
+        <option value="300">5 min</option><option value="1800">30 min</option>
+      </select>
+    </div>
+  </section>
+
+  <section>
+    <h2>Hora e unidades</h2>
+    <div class="row"><label for="celsius">Temperatura em Celsius</label><input type="checkbox" id="celsius"></div>
+    <div class="row"><label for="hour12">Relógio de 12 horas</label><input type="checkbox" id="hour12"></div>
+    <div class="row"><label for="mile">Distância em milhas</label><input type="checkbox" id="mile"></div>
+    <div class="row"><label for="sync">Usar fuso horário deste PC</label><input type="checkbox" id="sync"></div>
+    <div class="row">
+      <label for="timeformat">Formato da data</label>
+      <select id="timeformat"><option value="0">MM/DD/AAAA</option><option value="1">DD/MM/AAAA</option><option value="2">AAAA/MM/DD</option></select>
+    </div>
+  </section>
+
+  <section>
+    <h2>GIF</h2>
+    <div class="row">
+      <label for="gifnum">Animação</label>
+      <select id="gifnum">
+        <option value="1">Astronauta</option><option value="2">Divergent</option><option value="3">Pássaro</option>
+        <option value="4">Onda</option><option value="5">Personalizado</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="gifFile">Enviar GIF 80×80</label>
+      <input type="file" id="gifFile" accept="image/gif">
+    </div>
+  </section>
+
+  <section>
+    <h2>Fotos (tela Photo)</h2>
+    <div id="photos"></div>
+    <div class="row">
+      <label for="photoFile">Enviar foto ou GIF</label>
+      <input type="file" id="photoFile" accept="image/jpeg,image/png,image/gif,image/webp">
+    </div>
+    <div class="row">
+      <label for="photoInterval">Trocar a cada</label>
+      <select id="photoInterval">
+        <option value="5">5 s</option><option value="10">10 s</option><option value="15">15 s</option><option value="30">30 s</option>
+        <option value="60">1 min</option><option value="180">3 min</option><option value="300">5 min</option>
+      </select>
+    </div>
+    <div class="row"><span>Espaço usado</span><span class="muted" id="storage"></span></div>
+  </section>
+
+  <section>
+    <h2>Brilho e cores</h2>
+    <div class="row"><label for="brightness">Brilho</label><input type="range" id="brightness" min="2" max="99"><span class="val" id="brightnessVal"></span></div>
+    <div class="row">
+      <span>Cores do relógio</span>
+      <span><input type="color" id="color1"> <input type="color" id="color2"> <input type="color" id="color3"></span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Modo noturno</h2>
+    <div class="row"><label for="nightmode">Ativado</label><input type="checkbox" id="nightmode"></div>
+    <div class="row">
+      <span>Das <select id="starttime"></select> às <select id="stoptime"></select></span>
+    </div>
+    <div class="row"><label for="nightbrightness">Brilho</label><input type="range" id="nightbrightness" min="2" max="99"><span class="val" id="nightbrightnessVal"></span></div>
+  </section>
+
+  <section>
+    <div class="row"><span>Reiniciar a tela</span><button class="danger" id="restart">Reiniciar</button></div>
+  </section>
+</div>
+
+<div id="status">Informe o IP da tela e clique em Conectar.</div>
+
+<script>
+// Fora do Tauri (navegador comum) cai no fetch normal, que a tela bloqueia por CORS.
+const httpFetch = window.__TAURI__?.http?.fetch ?? fetch;
+const $ = id => document.getElementById(id);
+const timers = {};
+let base = '';
+
+function status(msg, err = false) { $('status').textContent = msg; $('status').classList.toggle('err', err); }
+
+async function req(path, opts) {
+  const res = await httpFetch(base + path, opts);
+  if (!res.ok) throw new Error(`HTTP ${res.status} em ${path}`);
+  return res;
+}
+
+async function set(key, value) {
+  try {
+    await req(`/api/set?key=${key}&value=${encodeURIComponent(value)}`);
+    status(`Salvo: ${key} = ${value}`);
+  } catch (e) { status(`Falha ao salvar ${key}: ${e.message}`, true); }
+}
+
+function setLater(key, value, ms = 300) {
+  clearTimeout(timers[key]);
+  timers[key] = setTimeout(() => set(key, value), ms);
+}
+
+// Cores: a tela guarda em RGB565 (mesma conversão da página original)
+const toRgb565 = hex => { const n = parseInt(hex.slice(1), 16); return ((n >> 19 & 31) << 11) | ((n >> 10 & 63) << 5) | (n >> 3 & 31); };
+const fromRgb565 = v => '#' + [[v >> 11 & 31, 31], [v >> 5 & 63, 63], [v & 31, 31]].map(([c, m]) => (c * 255 / m | 0).toString(16).padStart(2, '0')).join('');
+
+function hours(sel, from, to) { for (let h = from; h <= to; h++) sel.add(new Option(String(h).padStart(2, '0') + ':00', h)); }
+hours($('starttime'), 18, 23);
+hours($('stoptime'), 5, 12);
+
+async function connect() {
+  const ip = $('ip').value.trim();
+  base = 'http://' + ip;
+  status('Conectando...');
+  try {
+    const [cfg, th] = await Promise.all([req('/config').then(r => r.json()), req('/theme/list').then(r => r.json())]);
+    try { localStorage.setItem('ip', ip); } catch {}
+
+    $('city').value = cfg.city;
+    for (const k of ['celsius', 'hour12', 'mile', 'sync']) $(k).checked = !!cfg[k];
+    $('nightmode').checked = !!cfg.nightmode;
+    for (const k of ['timeformat', 'gifnum', 'brightness', 'starttime', 'stoptime', 'nightbrightness']) $(k).value = cfg[k];
+    $('brightnessVal').textContent = cfg.brightness;
+    $('nightbrightnessVal').textContent = cfg.nightbrightness;
+    for (const k of ['color1', 'color2', 'color3']) $(k).value = fromRgb565(cfg[k] || 0);
+
+    $('interval').value = th.interval;
+    $('themes').replaceChildren(...th.themes.map(t => {
+      const row = document.createElement('label');
+      row.className = 'row';
+      row.innerHTML = `<span></span><input type="checkbox" class="theme">`;
+      row.firstChild.textContent = t.name;
+      const cb = row.lastChild;
+      cb.checked = t.enabled;
+      cb.onchange = async () => {
+        if (!document.querySelector('.theme:checked')) { cb.checked = true; return status('Pelo menos uma tela precisa ficar ativa.', true); }
+        try { await req(`/theme/toggle?id=${t.id}&state=${cb.checked ? 1 : 0}`); status(`Tela ${t.name} ${cb.checked ? 'ativada' : 'desativada'}`); }
+        catch (e) { status(e.message, true); }
+      };
+      return row;
+    }));
+
+    await loadPhotos();
+    $('app').hidden = false;
+    status(`Conectado a ${ip}`);
+  } catch (e) {
+    $('app').hidden = true;
+    status(`Não consegui falar com ${ip}: ${e.message || e}`, true);
+  }
+}
+
+$('connect').onclick = connect;
+$('ip').onkeydown = e => e.key === 'Enter' && connect();
+$('saveCity').onclick = () => { const c = $('city').value.trim(); if (c) set('city', c); };
+$('city').onkeydown = e => e.key === 'Enter' && $('saveCity').click();
+
+$('celsius').onchange = e => set('celsius', e.target.checked ? 1 : 0);
+$('hour12').onchange = e => set('time12_24', e.target.checked ? 1 : 0);
+$('mile').onchange = e => set('mile', e.target.checked ? 1 : 0);
+$('sync').onchange = async e => {
+  await set('timesync', e.target.checked ? 1 : 0);
+  if (e.target.checked) set('zone', -new Date().getTimezoneOffset() / 60);
+};
+$('nightmode').onchange = e => set('nightmode', e.target.checked ? 1 : 0);
+for (const k of ['timeformat', 'gifnum', 'starttime', 'stoptime']) $(k).onchange = e => set(k, e.target.value);
+
+$('brightness').oninput = e => { $('brightnessVal').textContent = e.target.value; setLater('lcd_brightness', e.target.value); };
+$('nightbrightness').oninput = e => { $('nightbrightnessVal').textContent = e.target.value; setLater('nightbrightness', e.target.value); };
+
+for (const k of ['color1', 'color2', 'color3']) $(k).oninput = e => {
+  setLater(k, toRgb565(e.target.value), 200);
+  if (k === 'color1') { // a página original também manda a cor principal em RGB separado
+    const n = parseInt(e.target.value.slice(1), 16);
+    setLater('ws_r', n >> 16 & 255, 250); setLater('ws_g', n >> 8 & 255, 300); setLater('ws_b', n & 255, 350);
+  }
+};
+
+$('interval').onchange = async e => {
+  try { await req(`/theme/interval?val=${e.target.value}`); status('Intervalo salvo'); } catch (err) { status(err.message, true); }
+};
+
+$('gifFile').onchange = async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = '';
+  let gif;
+  try {
+    status('Recortando GIF para 80×80...');
+    // A tela só aceita 80×80: o Rust corta o centro em quadrado e redimensiona, mantendo a animação
+    gif = await window.__TAURI__.core.invoke('crop_gif', new Uint8Array(await file.arrayBuffer()));
+  } catch (err) { return status(`Não consegui recortar o GIF: ${err}`, true); }
+  const form = new FormData();
+  form.append('imageFile', new Blob([gif], { type: 'image/gif' }), '4.gif'); // mesmo nome fixo que a página original usa
+  status('Enviando GIF...');
+  try { await req('/upload', { method: 'POST', body: form }); status('GIF enviado. Escolha "Personalizado" para exibir.'); }
+  catch (err) { status(`Falha no envio: ${err.message}`, true); }
+};
+
+const fmtSize = b => b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(2)} MB`;
+let freeSpace = Infinity;
+
+async function loadPhotos() {
+  const data = await req('/photo/list').then(r => r.json());
+  freeSpace = data.total - data.used;
+  $('storage').textContent = `${fmtSize(data.used)} de ${fmtSize(data.total)}`;
+  if (data.interval) $('photoInterval').value = data.interval;
+  $('photos').replaceChildren(...data.files.map(f => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<label class="photo"><input type="checkbox"><span></span><span class="muted"></span></label><button class="danger small">Apagar</button>`;
+    const [cb, name, size] = row.querySelector('label').children;
+    name.textContent = f.name;
+    size.textContent = fmtSize(f.size);
+    cb.checked = f.enabled !== false;
+    cb.onchange = async () => {
+      try { await req(`/photo/toggle?name=${encodeURIComponent(f.name)}&state=${cb.checked ? 1 : 0}`); status(`${f.name} ${cb.checked ? 'ativada' : 'desativada'}`); }
+      catch (e) { cb.checked = !cb.checked; status(e.message, true); }
+    };
+    row.querySelector('button').onclick = async () => {
+      if (!confirm(`Apagar "${f.name}" da tela?`)) return;
+      try { await req('/photo/delete?name=' + encodeURIComponent(f.name)); status(`${f.name} apagada`); await loadPhotos(); }
+      catch (e) { status(e.message, true); }
+    };
+    return row;
+  }));
+  if (!data.files.length) $('photos').innerHTML = '<div class="row muted">Nenhuma foto na tela.</div>';
+}
+
+// Mesmo padrão de nome da página original: só letras/números/_/-, até 20 caracteres
+const safeName = (name, ext) => ((name.replace(/\.[^.]*$/, '').replace(/[^a-zA-Z0-9_-]/g, '') || 'image').slice(0, 20)) + ext;
+
+// Foto comum: corta o centro em quadrado e reduz para 240×240 em JPEG, igual à página original
+async function toJpeg240(file) {
+  const img = new Image();
+  img.src = URL.createObjectURL(file);
+  try { await img.decode(); } finally { URL.revokeObjectURL(img.src); }
+  const s = Math.min(img.width, img.height);
+  const c = document.createElement('canvas');
+  c.width = c.height = 240;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, 240, 240);
+  ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, 240, 240);
+  return new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.8));
+}
+
+$('photoFile').onchange = async e => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  let blob, name;
+  try {
+    status('Preparando imagem 240×240...');
+    if (file.type === 'image/gif') {
+      const gif = await window.__TAURI__.core.invoke('crop_gif', new Uint8Array(await file.arrayBuffer()), { headers: { size: '240' } });
+      blob = new Blob([gif], { type: 'image/gif' });
+      name = safeName(file.name, '.gif');
+    } else {
+      blob = await toJpeg240(file);
+      name = safeName(file.name, '.jpg');
+    }
+  } catch (err) { return status(`Não consegui preparar a imagem: ${err.message || err}`, true); }
+  if (blob.size > freeSpace) return status(`Sem espaço: a imagem tem ${fmtSize(blob.size)} e sobram ${fmtSize(freeSpace)}.`, true);
+  const form = new FormData();
+  form.append('file', blob, name);
+  status(`Enviando ${name}...`);
+  try { await req('/photo/upload', { method: 'POST', body: form }); status(`${name} enviada`); await loadPhotos(); }
+  catch (err) { status(`Falha no envio: ${err.message}`, true); }
+};
+
+$('photoInterval').onchange = async e => {
+  try { await req('/photo/interval?val=' + e.target.value); status('Intervalo das fotos salvo'); } catch (err) { status(err.message, true); }
+};
+
+$('restart').onclick = async () => {
+  if (!confirm('Reiniciar a tela?')) return;
+  try { await req('/restart'); } catch {} // a tela costuma cair antes de responder
+  status('Reiniciando... reconecte em alguns segundos.');
+};
+
+let saved = null;
+try { saved = localStorage.getItem('ip'); } catch {}
+$('ip').value = saved || '192.168.1.121';
+connect();
+</script>
+</body>
+</html>
