@@ -18,6 +18,8 @@ Dependências do sistema (CachyOS/Arch): `rustup` (toolchain stable), `webkit2gt
 ## Estrutura
 
 - `ui/index.html` — toda a interface: HTML + CSS + JS num arquivo só, sem bundler nem framework.
+  Visual pixel: prévia da tela à esquerda (`#screen`, aproximada — o firmware não expõe o layout real) e 4 abas.
+- `ui/fonts/` — Silkscreen e VT323 (OFL) embutidas, porque o app roda offline.
 - `src-tauri/src/main.rs` — registra o plugin HTTP e o comando `crop_gif`.
 - `src-tauri/capabilities/default.json` — libera o plugin HTTP para `http://*`.
 

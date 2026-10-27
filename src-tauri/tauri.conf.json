@@ -12,9 +12,11 @@
       {
         "label": "main",
         "title": "Smart Screen",
-        "width": 460,
-        "height": 860,
-        "visible": false
+        "width": 980,
+        "height": 780,
+        "visible": false,
+        "minWidth": 420,
+        "minHeight": 560
       }
     ],
     "security": {
